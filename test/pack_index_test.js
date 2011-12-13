@@ -41,8 +41,8 @@ exports.PackIndex = {
   
   "fanout": function(test) {
     var packIndex = new PackIndex(fixturePackIndex())
-    test.equal(packIndex.fanout("d3e1f6c063d0e579ce8b7f85324996c57b87fdcf"), 97)
-    test.equal(packIndex.fanout("00e1f6c063d0e579ce8b7f85324996c57b87fdcf"), 0)
+    test.deepEqual(packIndex.fanout("d3e1f6c063d0e579ce8b7f85324996c57b87fdcf"), {min:97,max:98})
+    test.deepEqual(packIndex.fanout("00e1f6c063d0e579ce8b7f85324996c57b87fdcf"), {min:0,max:2})
     test.done()
   },
   
@@ -51,6 +51,8 @@ exports.PackIndex = {
     test.equal(packIndex.indexOfSha("d3e1f6c063d0e579ce8b7f85324996c57b87fdcf"), 97)
     test.equal(packIndex.indexOfSha("0d91a54c7d439e84e3dd17d3594f1b2b6737f430"), 8)
     test.equal(packIndex.indexOfSha("0d91aXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"), null)
+    test.equal(packIndex.indexOfSha("0d91a"), 8)
+    test.equal(packIndex.indexOfSha("0d"), -1)  // ambiguous name; returns -1.
     test.done()
   },
   
