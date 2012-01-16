@@ -32,6 +32,12 @@
                 <option value=""></option>
               </select>
             </form>
+            <form id=ref-list-args>
+              <label class=field-description>args
+                <input>
+              </label>
+            </form>
+            <div id=rev-parsed></div>
           </div>
           <div class="detail-view-controls">
             <div id="jsgit-errors"></div>
@@ -97,6 +103,17 @@
           var refName = $("select#refs-list").val()
           RepoViewer.showRef(refName)
         })
+        $('#ref-list-args input').bind('input', function(e) {
+          var val = $(e.target).val();
+          /*
+          RepoViewer.repo.getShas(val.split(/\s+/), function(err, results) {
+            $('#rev-parsed').text(err || JSON.stringify(results));
+          });
+          */
+          RepoViewer.revParse(val, function(err, parsed) {
+            $('#rev-parsed').text(err || JSON.stringify(parsed));
+          });
+        });
         
         $("#diff-view-select").click(function(e) {
           e.preventDefault()

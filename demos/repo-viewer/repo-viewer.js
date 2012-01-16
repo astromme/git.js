@@ -22,6 +22,247 @@ RepoViewer = {
       RepoViewer.displayCommitAndParents(firstCommit, 10)
     })
   },
+  revList: function(argString) {
+    var filter = {cursor: []};
+  },
+  revParse: function(argString, callback) {
+    var todo = 0;
+    var as_is = false;
+    var args = argString.split(/\s+/);
+    var i = 0; 
+    var commits = [], files = [];
+    parseNextArg(null);
+    var parsed = [];
+    function parseNextArg(err, prevResult) {
+      if (err != null) return callback(err);
+      if (prevResult != null) parsed.push(prevResult);
+      if (i === args.length)
+        return callback(null, parsed);
+      var arg = args[i++];
+      if (! arg) return parseNextArg(null);
+      if (as_is) {
+        files.push(arg);
+        return parseNextArg(null);
+      }
+      var m;
+      var commitNames = [];  // names with suffixes
+      var ops = [];  // What operations to perform after looking up the commits.
+      if (m = /([^]*)\.\.\.([^]*)/.exec(arg)) {
+        // symmetric difference
+        commitNames.push(m[1] === "" ? "HEAD" : m[1]);
+        commitNames.push(m[2] === "" ? "HEAD" : m[2]);
+        ops.push({
+            commits: [commitNames.length - 2, commitNames.length - 1],
+            op: 'identity',
+            include: true});
+        ops.push({
+            commits: [commitNames.length - 2, commitNames.length - 1],
+            op: 'merge-base',
+            include: false});
+      } else if (m = /([^]*)\.\.([^]*)/.exec(arg)) {
+        // difference
+        commitNames.push(m[1] === "" ? "HEAD" : m[1]);
+        commitNames.push(m[2] === "" ? "HEAD" : m[2]);
+        ops.push({
+            commits: [commitNames.length - 2],
+            op: 'identity',
+            include: false});
+        ops.push({
+            commits: [commitNames.length - 1],
+            op: 'identity',
+            include: true});
+      } else if (m = /([^]+)^!/.exec(arg)) {
+        // include commit but exclude all its parents.
+        commitNames.push(m[1]);
+        ops.push({
+            commits: [commitNames.length - 1],
+            op: 'identity',
+            include: true});
+        ops.push({
+            commits: [commitNames.length - 1],
+            op: 'parents',
+            include: false});
+      } else if (m = /([^]+)^@/.exec(arg)) {
+        // all parents of commit.
+        commitNames.push(m[1]);
+        ops.push({
+            commits: [commitNames.length - 1],
+            op: 'parents',
+            include: true});
+      } else if ('^' === arg.charAt(0)) {
+        commitNames.push(arg.substr(1));
+        ops.push({
+            commits: [commitNames.length - 1],
+            op: 'identity',
+            include: false});
+      } else {
+        commitNames.push(arg);
+        ops.push({
+            commits: [commitNames.length - 1],
+            op: 'identity',
+            include: true});
+      }
+    
+      RepoViewer.getNamesWithSuffixes(commitNames, function(err, commits) {
+        var result = [];
+        if (err) return parseNextArg(err);
+        var j = 0;
+        handleNext();
+
+
+        // TODO: fetch them in parallel
+        function handleNext() {
+          if (j === ops.length) return parseNextArg(null, result);
+          var op = ops[j];
+          j++;
+          if ('identity' === op.op) {
+            result.push({commit: commits[op.commits[0]], include: op.include});
+            return handleNext();
+          } else if ('parents' === op.op) {
+            RepoViewer.repo.getObject(commits[op.commits[0]], function(err, parents) {
+              if (err) return parseNextArg(err);
+              Array.prototype.push.apply(result, parents);
+              for (var i = 0; i < parents.length; i++) {
+                result.push({commit:parents[i], include: op.include});
+              }
+              return handleNext();
+            });
+          } else if ('merge-base' === op.op) {
+            RepoViewer.getMergeBase([commits[op.commits[0]], commits[op.commits[1]]],
+                function(err, mergeBases) {
+              if (err) return onNamesRetrieved(err);
+              for (var i = 0; i < mergeBases.length; i++) {
+                result.push({commit:mergeBases[i], include:op.include});
+              }
+              return handleNext();
+            });
+          } else {
+            return parseNextArg(new Error('Unknown internal operation: '  + op.op));
+          }
+        }
+      });
+    }
+  },
+  getNamesWithSuffixes: function(namesWithSuffixes, callback) {
+    var names = [];
+    var suffixes = [];
+    for (var i = 0; i < namesWithSuffixes.length; i++) {
+      var nameWith = namesWithSuffixes[i];
+      var firstCaret = nameWith.indexOf('^')
+        , firstTilde = nameWith.indexOf('~');
+      var suffixStart = nameWith.length;
+      if (-1 !== firstCaret) suffixStart = firstCaret;
+      if (-1 !== firstTilde && firstTilde < suffixStart) suffixStart = firstTilde;
+      var name = nameWith.substr(0, suffixStart)
+        , suffix = nameWith.substr(suffixStart);
+      names.push(name);
+      suffixes.push(suffix);
+    }
+    RepoViewer.repo.getShas(names, function(err, getShasResult) {
+      if (err) return callback(err);
+      var unknownNames = [], shas = [];
+      for (var k = 0; k < getShasResult.length; k++) {
+        if (null == getShasResult[k].sha)
+          unknownNames.push(getShasResult[k].name);
+        shas.push(getShasResult[k].sha);
+      }
+      if (0 !== unknownNames.length) {
+        var s = unknownNames.length == 1 ? "" : "s";
+        return callback(new Error("Unknown name"  + s + ": " + unknownNames.join(", ")));
+      }
+      unknownNames = undefined;
+      walkSuffixes(shas, suffixes, callback);
+    });
+    
+    /** Given a list of */
+    function walkSuffixes(shas, suffixes, callback) {
+      if (shas.length !== suffixes.length)
+        return callback(new Error("Shas and suffixes must have same length"));
+      var result = [];  // list of sha
+      doItem(0);
+      function doItem(i) {
+        if (i === names.length) return callback(null, result);
+        var sha = shas[i]
+          , suffix = suffixes[i];
+        walkSuffix(sha, suffix, 0, function(err, sha) {
+          if (err) return callback(err);
+          result.push(sha);
+          doItem(i + 1);
+        });
+      }
+    }
+    /** Starting with a sha, walks up the ancestry to resolve the suffix
+      * (^, ~10, etc). Not too many suffixes are understood yet.
+      */
+    function walkSuffix(sha, suffix, i, callback) {
+      if (i >= suffix.length) return callback(null, sha);
+      var zeroOrd = '0'.charCodeAt(0), nineOrd = '9'.charCodeAt(0);
+      if ('^' === suffix.charAt(i)) {
+        i++;
+        var parentIndex = 0, hasParentIndex = false;
+        var c;
+        while (zeroOrd <= (c = suffix.charCodeAt(i)) && c <= nineOrd) {
+          hasParentIndex = true;
+          parentIndex = parentIndex * 10 + c - zeroOrd;
+          i++;
+        }
+        if (! hasParentIndex) parentIndex = 1;
+        if (0 === parentIndex)  // ^0 means the commit itself
+          return walkSuffix(sha, suffix, i, callback);
+
+        RepoViewer.repo.getObject(sha, function(err, commit) {
+          if (err) return callback(err);
+          if ("commit" !== commit.type)
+            return callback(new Error(
+                "Sha " + sha + " was expected to be a commit; was " +
+                commit.type));
+          if (parentIndex - 1 >= commit.parents.length)
+            return callback(new Error("In " + suffix + ", " + sha + " has no parent " + parentIndex));
+          return walkSuffix(commit.parents[parentIndex-1], suffix, i, callback);
+        });
+      } else if ('~' === suffix.charAt(i)) {
+        i++;
+        var ancestorLevel = 0;
+        var c;
+        while (zeroOrd <= (c = suffix.charCodeAt(i)) && c <= nineOrd) {
+          ancestorLevel = ancestorLevel * 10 + c - zeroOrd;
+          i++;
+        }
+        getNthAncestor(sha, ancestorLevel, function(err, ancestorSha) {
+          if (err) return callback(err);
+          return walkSuffix(ancestorSha, suffix, i, callback);
+        });
+        function getNthAncestor(sha, ancestorLevel, callback) {
+          if (ancestorLevel === 0) return walkSuffix(sha, suffix, i, callback);
+          RepoViewer.repo.getObject(sha, function(err, commit) {
+            if (err) return callback(err);
+            if ("commit" !== commit.type)
+              return callback(new Error(
+                  "Sha " + sha + " was expected to be a commit; was " +
+                  commit.type));
+            if (0 === commit.parents.length)
+              return callback(new Error(sha + " has no parent"));
+            return getNthAncestor(commit.parents[0], ancestorLevel-1, callback);
+          });
+        }
+      } else {
+        return callback(new Error(
+            "Could not understand suffix " +
+            suffix + " starting at " + i +
+            "(" + suffix.charAt(i) + ")"));
+      }
+    }
+  },
+  getMergeBase: function(commits, callback) {
+    return callback(new Error("Not implemented yet!"));
+    var seen = {};  // commit -> true
+    for (var i = 0; i < commits.length; i++) {
+      var commit = commits[i];
+      RepoViewer.repo.getObject(commit, function(err, result) {
+      });
+    }
+    RepoViewer.repo.getObject(commit);
+  },
   
   clearTree: function() {
     $("#top-directory").html("")
